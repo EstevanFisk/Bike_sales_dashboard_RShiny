@@ -3,7 +3,7 @@ title: "Price Prediction App"
 output:
   flexdashboard::flex_dashboard:
     orientation: columns
-    vertical_layout: fill
+    vertical_layout: scroll #was: "fill"
     css: "css/styles-default.css"
     logo: "img/logo-cannondale.png"
 runtime: shiny
@@ -35,7 +35,7 @@ library(flexdashboard)
 library(shiny)
 library(shinyjs)
 library(shinyWidgets)
-#library(rsconnect)
+library(rsconnect)
 
 # Core
 library(tidyverse)
@@ -72,14 +72,47 @@ source("scripts/plot_bike_prediction_cannondale.R")
 model_xgboost <- read_rds("models/model_xgboost.rds")
 ```
 
-Column {.sidebar}
+Inputs {.sidebar}
 -----------------------------------------------------------------------
 
 ```{r}
 useShinyjs(rmd = TRUE)
 
-# Bike Model Input ----
-textInput(inputId = "text_bike_model", label = h4("Bike Model"), value = "Jekyll Al 1 Black Inc.")
+# Bike Model Components ----
+choices_base_model <- bikes_tbl %>%
+  separate_bike_model(keep_model_column = FALSE, append = FALSE) %>%
+  distinct(model_base) %>%
+  arrange(model_base)
+
+choices_tier <- c("Ultegra", "Red", "Dura_Ace", "Team", "Black")
+  
+choices_features <- c("Hi_Mod", "Disc")
+
+h4("Bike Configuration")
+# 1. Base Name (e.g. Jekyll)
+pickerInput(inputId = "input_base_model", 
+            label   = "Base Model", 
+            choices = choices_base_model$model_base, 
+            selected = "Jekyll",
+            options = list(container = "body"))
+
+# 2. Tier (e.g. Al 1)
+pickerInput(inputId = "input_tier", 
+            label   = "Tier / Material", 
+            choices = choices_tier, 
+            selected = "Black",
+            options = list(container = "body"))
+
+# 3. Features (e.g. Black Inc.)
+# using awesomeCheckboxGroup for a nicer look, or standard checkboxGroupInput
+awesomeCheckboxGroup(
+  inputId = "input_features",
+  label   = "Features (Check all that apply)",
+  choices = choices_features,
+  selected = NULL,
+  inline  = TRUE # Makes them sit side-by-side to save vertical space
+)
+
 
 # Bike Family (Category 2) ----
 
@@ -89,12 +122,13 @@ category_hierachy_tbl <- bikes_tbl %>%
 
 pickerInput(inputId  = "picker_category_2", 
             label    = h4("Bike Family"), 
-            choices  = category_hierachy_tbl$category_2, 
+            choices  = category_hierachy_tbl$category_2,
+            options = list(container = "body"),
             selected = "Over Mountain")
   
 
 # Bike Type (Category 1) ----
-h4("Bike Type")
+
 bike_type <- reactive({
   category_hierachy_tbl %>%
     filter(category_2 == input$picker_category_2) %>%
@@ -103,13 +137,15 @@ bike_type <- reactive({
 
 output$bike_type <- renderText(bike_type())
 
-textOutput(outputId = "bike_type") %>% em() %>% strong()
+h4("Bike Type")
+textOutput(outputId = "bike_type", inline= TRUE) %>% em() %>% strong()
 
 # Frame Material ----
 br()
 pickerInput(inputId  = "picker_frame_material", 
             label    = h4("Frame Material"), 
-            choices  = c("Aluminum", "Carbon"), 
+            choices  = c("Aluminum", "Carbon"),
+            options = list(container= "body"),
             selected = "Aluminum")
 
 
@@ -121,9 +157,19 @@ actionButton(inputId = "apply", label = "Apply", icon = icon(name = "play", lib 
 
 actionButton("reset", label = "Reset", icon = icon("sync"))
 
+br()
+br()
+br()
+
 observeEvent(eventExpr = input$reset, handlerExpr = {
+  # Reset Base Model
+  updatePickerInput(session = session, inputId = "input_base_model", selected = "Jekyll")
   
-  updateTextInput(session = session, inputId = "text_bike_model", value = "Jekyll Al 1 Black Inc.")
+  # Reset Tier
+  updatePickerInput(session = session, inputId = "input_tier", selected = "Black")
+  
+  # Reset Features
+  updateAwesomeCheckboxGroup(session = session, inputId = "input_features", selected = character(0))
   
   updatePickerInput(session = session, inputId = "picker_category_2", selected = "Over Mountain")
   
@@ -142,10 +188,26 @@ Column {data-width=650}
 -----------------------------------------------------------------------
 
 ```{r}
+# CONSTRUCT BIKE TEXT STRING ----
+# This creates a reactive string: "Jekyll" + "Black" + "No features"
+bike_model_text_constructed <- reactive({
+  
+  # Paste components together with spaces
+  text <- paste(input$input_base_model, 
+                input$input_tier, 
+                paste(input$input_features, collapse = " "))
+  
+  # Clean up extra spaces (if no features are selected)
+  text <- str_squish(text)
+  
+  return(text)
+})
+
+
 new_bike_tbl <- eventReactive(eventExpr = input$apply, valueExpr = {
   
   generate_new_bike(
-    bike_model = input$text_bike_model, 
+    bike_model = bike_model_text_constructed(), 
     category_1 = bike_type(), 
     category_2 = input$picker_category_2, 
     frame_material = input$picker_frame_material, 
@@ -164,7 +226,8 @@ new_bike_tbl <- eventReactive(eventExpr = input$apply, valueExpr = {
 
 output$plotly_1 <- renderPlotly({
   bind_bike_prediction(bikes_tbl, new_bike_tbl()) %>%
-    plot_bike_prediction_cannondale()
+    plot_bike_prediction_cannondale %>%
+    config(displayModeBar = FALSE)
 })
 
 plotlyOutput("plotly_1")
@@ -188,11 +251,9 @@ renderTable({
 ### Images
 
 ```{r}
-# CAUTION MAKE SURE TO SET "DELETEFILE = FALSE" FOR RNEDERIMAGE FUNCTION!!!!
 renderImage({
   
-#  new_bike_tbl <- generate_new_bike("Habit", "Mountain", "Trail", "Carbon", .ml_model = model_xgboost)
-  
+  # 1. Prepare the filename string (Existing logic)
   detect <- new_bike_tbl() %>%
     pull(model_base) %>%
     str_to_lower() %>%
@@ -201,26 +262,39 @@ renderImage({
   
   detect <- ifelse(detect %in% c("caad12", "caad8"),
                    yes = detect,
-                   no = detect %>%
-                     # regex to remove digits
-                     str_remove_all(pattern = "[[:digit:]]"))
+                   no = detect %>% str_remove_all(pattern = "[[:digit:]]"))
   
-  
+  # 2. Find the file (Safely)
   directory_files <- fs::dir_ls("bike_img")
   
-  detection_results <-  directory_files %>%
+  # We look for the pattern
+  detection_results <- directory_files %>%
     str_detect(pattern = str_glue("bike_img/{detect}"))
   
   path <- directory_files[detection_results]
   
+  # 3. Robust Error Handling (New Feature)
+  # If no image is found, use the logo as a fallback so the app doesn't crash
+  if (length(path) == 0) {
+    path <- "img/logo-cannondale.png" 
+    alt_text <- "Image not available"
+  } else {
+    # If multiple images match, take the first one to avoid list errors
+    path <- path[1] 
+    alt_text <- detect
+  }
+  
+  # 4. Render with Mobile Constraints
   list(
     src = path,
     contentType = "image/png",
-    width = "100%",
-    alt = detect
+    alt = alt_text,
+    # This style string is critical for mobile responsiveness:
+    # - max-height: Prevents image from pushing content off the bottom of a phone
+    # - object-fit: Ensures the bike isn't squashed or stretched
+    # - margin: 0 auto: Centers the image
+    style = "display: block; margin: 0 auto; max-width: 100%; max-height: 300px; height: auto; object-fit: contain;"
   )
+  
 }, deleteFile = FALSE)
-
-
 ```
-
